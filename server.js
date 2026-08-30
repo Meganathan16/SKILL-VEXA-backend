@@ -3400,9 +3400,7 @@ app.listen(
             `Server running on port: ${PORT}`
         );
 
-        console.log(
-            `Frontend path: ${frontendPath}`
-        );
+       
 
         console.log(
             "=========================================="
