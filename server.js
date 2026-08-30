@@ -29,34 +29,13 @@ app.use(
 );
 
 
-// ======================================================
-// FRONTEND PATH
-// ======================================================
-//
-// Project structure:
-//
-// SKILLVEXA/
-// ├── backend/
-// │   └── server.js
-// │
-// └── frontend/
-//     ├── dashboard.html
-//     ├── industry.html
-//     └── ...
-//
-// ======================================================
-
-const frontendPath = path.join(
-    __dirname,
-    "../frontend"
-);
-
-
-// Serve frontend files
-
-app.use(
-    express.static(frontendPath)
-);
+app.get("/", (req, res) => {
+    res.json({
+        success: true,
+        project: "SKILLVEXA",
+        message: "Backend is running"
+    });
+});
 
 
 // ======================================================
