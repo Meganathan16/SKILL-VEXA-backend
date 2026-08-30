@@ -3,7 +3,7 @@ const express = require("express");
 const mysql = require("mysql2/promise");
 const path = require("path");
 require("dotenv").config();
-
+const cors = require("cors");
 const app = express();
 
 
@@ -22,11 +22,13 @@ const HOST = "0.0.0.0";
 
 app.use(express.json());
 
-app.use(
-    express.urlencoded({
-        extended: true
-    })
-);
+app.use(cors({
+    origin: "https://meganathan16.github.io",
+    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization"]
+}));
+
+app.options("*", cors());
 
 
 app.get("/", (req, res) => {
@@ -132,23 +134,7 @@ async function testDatabase() {
 }
 
 
-// ======================================================
-// HOME / DASHBOARD
-// ======================================================
 
-app.get(
-    "/",
-    (req, res) => {
-
-        res.sendFile(
-            path.join(
-                frontendPath,
-                "index.html"
-            )
-        );
-
-    }
-);
 
 
 // ======================================================
