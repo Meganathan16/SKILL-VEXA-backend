@@ -1,9 +1,10 @@
 
 const express = require("express");
 const mysql = require("mysql2/promise");
-const path = require("path");
+
 require("dotenv").config();
 const cors = require("cors");
+
 const app = express();
 
 
@@ -17,18 +18,26 @@ const HOST = "0.0.0.0";
 
 
 // ======================================================
-// MIDDLEWARE
+// CORS
+// ======================================================
+
+const corsOptions = {
+    origin: "https://meganathan16.github.io",
+    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization"],
+    credentials: false
+};
+
+app.use(cors(corsOptions));
+
+app.options("*", cors(corsOptions));
+
+
+// ======================================================
+// JSON
 // ======================================================
 
 app.use(express.json());
-
-app.use(cors({
-    origin: "https://meganathan16.github.io",
-    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization"]
-}));
-
-app.options("*", cors());
 
 
 app.get("/", (req, res) => {
@@ -231,23 +240,6 @@ app.get(
 );
 
 
-// =====================================================
-// INDUSTRY PAGE
-// =====================================================
-
-app.get(
-    "/industry",
-    (req, res) => {
-
-        res.sendFile(
-            path.join(
-                frontendPath,
-                "industry.html"
-            )
-        );
-
-    }
-);
 
 
 // =====================================================
