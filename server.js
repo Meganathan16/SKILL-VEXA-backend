@@ -143,7 +143,7 @@ app.get(
         res.sendFile(
             path.join(
                 frontendPath,
-                "dashboard.html"
+                "index.html"
             )
         );
 
