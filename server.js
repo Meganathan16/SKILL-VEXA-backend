@@ -1,13 +1,18 @@
 
 const express = require("express");
-const mysql = require("mysql2/promise");
+const { Pool } = require("pg");
 
 require("dotenv").config();
 const cors = require("cors");
 
 const app = express();
 
-
+const pool = new Pool({
+    connectionString: process.env.DATABASE_URL,
+    ssl: {
+        rejectUnauthorized: false
+    }
+});
 // ======================================================
 // SETTINGS
 // ======================================================
@@ -50,53 +55,254 @@ app.get("/", (req, res) => {
 
 
 // ======================================================
-// MYSQL CONNECTION
+// POSTGRESQL / SUPABASE CONNECTION
 // ======================================================
 //
-// Railway MySQL credentials must be added to Render
-// Environment Variables.
+// Render Environment Variable required:
 //
-// Required variables:
+// DATABASE_URL
 //
-// DB_HOST
-// DB_PORT
-// DB_USER
-// DB_PASSWORD
-// DB_NAME
+// This is the PostgreSQL connection string from Supabase.
 //
 // ======================================================
 
-const db = mysql.createPool({
+/*
+    PostgreSQL compatibility wrapper.
 
-    host:
-        process.env.DB_HOST,
+    The existing API functions below were originally written for
+    mysql2/promise. This wrapper keeps those functions unchanged
+    while translating the small MySQL-specific differences to
+    PostgreSQL syntax and result format.
+*/
 
-    port:
-        Number(process.env.DB_PORT) || 3306,
+function convertMySQLQueryToPostgres(sql) {
 
-    user:
-        process.env.DB_USER,
+    let query = sql;
 
-    password:
-        process.env.DB_PASSWORD,
+    // MySQL positional placeholders: ? -> PostgreSQL: $1, $2, ...
+    let parameterIndex = 0;
 
-    database:
-        process.env.DB_NAME,
+    query = query.replace(/\?/g, () => {
+        parameterIndex++;
+        return `$${parameterIndex}`;
+    });
 
-    waitForConnections:
-        true,
+    // MySQL boolean comparison -> PostgreSQL boolean comparison.
+    query = query.replace(
+        /\bis_required\s*=\s*1\b/gi,
+        "is_required = TRUE"
+    );
 
-    connectionLimit:
-        10,
+    // PostgreSQL cannot SUM(boolean).
+    // Convert TRUE/FALSE to 1/0 before summing.
+    const booleanColumns = [
+        "weak_practical_skills",
+        "weak_python",
+        "weak_communication",
+        "no_project_experience",
+        "weak_problem_solving"
+    ];
 
-    queueLimit:
-        0
+    for (const column of booleanColumns) {
 
-});
+        const qualifiedPattern = new RegExp(
+            `SUM\\(\\s*([a-zA-Z_][a-zA-Z0-9_]*)\\.${column}\\s*\\)`,
+            "gi"
+        );
+
+        query = query.replace(
+            qualifiedPattern,
+            (match, tableAlias) =>
+                `SUM(CASE WHEN ${tableAlias}.${column} THEN 1 ELSE 0 END)`
+        );
+
+        const unqualifiedPattern = new RegExp(
+            `SUM\\(\\s*${column}\\s*\\)`,
+            "gi"
+        );
+
+        query = query.replace(
+            unqualifiedPattern,
+            `SUM(CASE WHEN ${column} THEN 1 ELSE 0 END)`
+        );
+    }
+
+    // PostgreSQL folds unquoted camelCase aliases to lowercase.
+    // Quote them so existing JavaScript property names continue to work.
+    query = query.replace(
+        /\bAS\s+([a-zA-Z_][a-zA-Z0-9_]*[A-Z][a-zA-Z0-9_]*)/g,
+        'AS "$1"'
+    );
+
+    return query;
+}
+
+function addCamelCaseAliases(rows, sql) {
+
+    if (!Array.isArray(rows) || rows.length === 0) {
+        return rows;
+    }
+
+    const aliases = [];
+
+    const aliasRegex =
+        /\bAS\s+([a-zA-Z_][a-zA-Z0-9_]*[A-Z][a-zA-Z0-9_]*)/g;
+
+    let match;
+
+    while ((match = aliasRegex.exec(sql)) !== null) {
+        aliases.push(match[1]);
+    }
+
+    if (aliases.length === 0) {
+        return rows;
+    }
+
+    return rows.map(row => {
+
+        for (const alias of aliases) {
+
+            const lowerKey = alias.toLowerCase();
+
+            if (
+                row[alias] === undefined &&
+                row[lowerKey] !== undefined
+            ) {
+                row[alias] = row[lowerKey];
+            }
+        }
+
+        return row;
+    });
+}
+
+function createPostgresConnectionWrapper(client) {
+
+    return {
+
+        async query(sql, params = []) {
+
+            const postgresSql =
+                convertMySQLQueryToPostgres(sql);
+
+            let finalSql = postgresSql;
+
+            // The existing code expects insertId after INSERT.
+            // PostgreSQL needs RETURNING id for that.
+            if (
+                /^\s*INSERT\s+INTO\b/i.test(finalSql) &&
+                !/\bRETURNING\b/i.test(finalSql)
+            ) {
+                finalSql += " RETURNING id";
+            }
+
+            const result =
+                await client.query(
+                    finalSql,
+                    params
+                );
+
+            const rows =
+                addCamelCaseAliases(
+                    result.rows || [],
+                    sql
+                );
+
+            return [
+                rows,
+                {
+                    insertId:
+                        rows.length > 0 &&
+                        rows[0].id !== undefined
+                            ? rows[0].id
+                            : undefined,
+
+                    affectedRows:
+                        result.rowCount || 0,
+
+                    rowCount:
+                        result.rowCount || 0
+                }
+            ];
+        },
+
+        async beginTransaction() {
+            await client.query("BEGIN");
+        },
+
+        async commit() {
+            await client.query("COMMIT");
+        },
+
+        async rollback() {
+            await client.query("ROLLBACK");
+        },
+
+        release() {
+            client.release();
+        }
+    };
+}
+
+const db = {
+
+    async query(sql, params = []) {
+
+        const postgresSql =
+            convertMySQLQueryToPostgres(sql);
+
+        let finalSql = postgresSql;
+
+        // Keep existing insertId usage working.
+        if (
+            /^\s*INSERT\s+INTO\b/i.test(finalSql) &&
+            !/\bRETURNING\b/i.test(finalSql)
+        ) {
+            finalSql += " RETURNING id";
+        }
+
+        const result =
+            await pool.query(
+                finalSql,
+                params
+            );
+
+        const rows =
+            addCamelCaseAliases(
+                result.rows || [],
+                sql
+            );
+
+        return [
+            rows,
+            {
+                insertId:
+                    rows.length > 0 &&
+                    rows[0].id !== undefined
+                        ? rows[0].id
+                        : undefined,
+
+                affectedRows:
+                    result.rowCount || 0,
+
+                rowCount:
+                    result.rowCount || 0
+            }
+        ];
+    },
+
+    async getConnection() {
+
+        const client =
+            await pool.connect();
+
+        return createPostgresConnectionWrapper(client);
+    }
+};
 
 
 // ======================================================
-// TEST MYSQL CONNECTION
+// TEST POSTGRESQL CONNECTION
 // ======================================================
 
 async function testDatabase() {
@@ -113,7 +319,7 @@ async function testDatabase() {
         );
 
         console.log(
-            "MySQL connected successfully."
+            "PostgreSQL / Supabase connected successfully."
         );
 
     }
@@ -121,7 +327,7 @@ async function testDatabase() {
     catch (error) {
 
         console.error(
-            "MySQL connection failed:"
+            "PostgreSQL / Supabase connection failed:"
         );
 
         console.error(
@@ -141,9 +347,6 @@ async function testDatabase() {
     }
 
 }
-
-
-
 
 
 // ======================================================
@@ -3235,7 +3438,7 @@ app.get(
                 success: true,
 
                 message:
-                    "SKILLVEXA MySQL connection is working.",
+                    "SKILLVEXA PostgreSQL connection is working.",
 
                 database:
                     result[0].connected === 1
@@ -3257,7 +3460,7 @@ app.get(
                 success: false,
 
                 message:
-                    "MySQL connection failed.",
+                    "PostgreSQL connection failed.",
 
                 error:
                     error.message
